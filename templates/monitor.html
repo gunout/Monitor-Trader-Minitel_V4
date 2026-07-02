@@ -146,6 +146,7 @@
         .btn-prefs { border-color: #FF9800; color: #FF9800; }
         .btn-alert { border-color: #ff1744; color: #ff1744; }
         .btn-refresh { border-color: #00ccff; color: #00ccff; }
+        .btn-train-ai { border-color: #ffaa00; color: #ffaa00; }
         .quick-buttons { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 4px; }
 
         .watchlist-item {
@@ -343,6 +344,43 @@
             to { transform: translateX(0); opacity: 1; }
         }
 
+        /* IA Probabilities bars */
+        .ia-prob-container {
+            margin-top: 8px;
+            padding: 6px;
+            border: 1px solid rgba(51,255,51,0.2);
+            border-radius: 4px;
+        }
+        .ia-prob-bar {
+            display: flex;
+            height: 16px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 4px;
+            border: 1px solid #33ff33;
+        }
+        .ia-prob-bar .bar {
+            height: 100%;
+            transition: width 0.5s ease;
+        }
+        .ia-prob-bar .bar-sell { background: #ff3333; }
+        .ia-prob-bar .bar-neutral { background: #ffaa00; }
+        .ia-prob-bar .bar-buy { background: #33ff33; }
+        .ia-prob-legend {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.5rem;
+            margin-top: 2px;
+            opacity: 0.7;
+        }
+
+        .ia-status {
+            font-size: 0.6rem;
+            opacity: 0.5;
+            margin-top: 4px;
+            text-align: center;
+        }
+
         #chart-container { height: 400px; border: 1px solid #33ff33; background: #0a0a0a; position: relative; }
 
         @media (max-width: 1200px) { .main-grid { grid-template-columns: 1fr; } }
@@ -373,6 +411,9 @@
                 </div>
             </div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <button class="btn btn-sm btn-train-ai" onclick="trainAI()" title="Ré-entraîner le modèle IA">
+                    <i class="fas fa-brain"></i> Train IA
+                </button>
                 <button class="btn btn-sm btn-alert" onclick="toggleAlerts()" id="alert-btn">
                     <i class="fas fa-bell"></i> <span id="alert-status">🔕</span>
                 </button>
@@ -447,7 +488,7 @@
         </div>
 
         <div class="footer">
-            📊 TRADING MONITOR v6.0 • 🔔 Alertes • 💾 Préférences • 📥 Export CSV • 📊 Comparaison • 📈 Fondamentales
+            📊 TRADING MONITOR v6.0 • 🔔 Alertes • 💾 Préférences • 📥 Export CSV • 📊 Comparaison • 📈 Fondamentales • 🧠 IA entraînée
         </div>
     </div>
 
@@ -470,8 +511,8 @@
         // ================================================================
         // CONFIGURATION
         // ================================================================
-        var API_BASE = '';
-        var WS_URL = window.location.origin;
+        var API_BASE = 'https://radio-gleaphe.duckdns.org/trading';
+        var WS_URL = 'https://radio-gleaphe.duckdns.org/trading';
         var socket = io(WS_URL);
         var currentSymbol = 'GLD';
         var currentPeriod = '1d';
@@ -530,6 +571,32 @@
             'indices': '📈 INDICES',
             'space': '🚀 SPACE'
         };
+
+        // ================================================================
+        // FONCTIONS
+        // ================================================================
+
+        function trainAI() {
+            showNotification('🧠 Entraînement du modèle IA en cours...', '⏳');
+            document.getElementById('status').textContent = '🧠 ENTRAINEMENT IA...';
+            
+            fetch(API_BASE + '/api/train-ai')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showNotification('✅ Modèle IA ré-entraîné avec succès ! Précision: ' + (data.accuracy || 'N/A'), '🧠');
+                        document.getElementById('status').textContent = '🟢 IA OK';
+                        fetchDataForTab(currentTab);
+                    } else {
+                        showNotification('❌ Erreur: ' + data.message, '❌');
+                        document.getElementById('status').textContent = '❌ ERREUR IA';
+                    }
+                })
+                .catch(err => {
+                    showNotification('❌ Erreur: ' + err.message, '❌');
+                    document.getElementById('status').textContent = '❌ ERREUR IA';
+                });
+        }
 
         // ================================================================
         // CHARGEMENT DES PRÉFÉRENCES
@@ -847,6 +914,19 @@
                                 <span>Recommandation: <strong id="ia-reco-${category}" style="font-size:1rem;">--</strong></span>
                                 <span>Confiance: <strong id="ia-conf-${category}" style="font-size:1rem;">--</strong></span>
                             </div>
+                            <div id="ia-prob-${category}" class="ia-prob-container" style="display:none;">
+                                <div class="ia-prob-bar">
+                                    <div class="bar bar-sell" id="ia-bar-sell-${category}" style="width:0%;"></div>
+                                    <div class="bar bar-neutral" id="ia-bar-neutral-${category}" style="width:0%;"></div>
+                                    <div class="bar bar-buy" id="ia-bar-buy-${category}" style="width:0%;"></div>
+                                </div>
+                                <div class="ia-prob-legend">
+                                    <span style="color:#ff3333;">VENTE</span>
+                                    <span style="color:#ffaa00;">NEUTRE</span>
+                                    <span style="color:#33ff33;">ACHAT</span>
+                                </div>
+                            </div>
+                            <div id="ia-status-${category}" class="ia-status">IA: En attente...</div>
                         </div>
                     </div>
 
@@ -1073,136 +1153,112 @@
         // LOAD QUICK BUTTONS
         // ================================================================
         function loadQuickButtons(category) {
-    var container = document.getElementById('quick-buttons-' + category);
-    if (!container) return;
-    var symbols = categorySymbols[category] || [];
-    var html = '';
-    var count = 0;
-    symbols.forEach(function(sym) {
-        if (count >= 30) return;  // Augmenté à 30
-        var label = sym;
-        
-        // ===== COMMODITÉS =====
-        if (sym === 'GLD') label = '🥇 OR';
-        else if (sym === 'SLV') label = '🥈 ARGENT';
-        else if (sym === 'USO') label = '🛢️ WTI';
-        else if (sym === 'BNO') label = '🛢️ BRENT';
-        else if (sym === 'UNG') label = '🔥 GAZ';
-        else if (sym === 'CORN') label = '🌽 MAIS';
-        else if (sym === 'WEAT') label = '🌾 BLE';
-        else if (sym === 'SOYB') label = '🌱 SOJA';
-        else if (sym === 'CPER') label = '🔶 CUIVRE';
-        else if (sym === 'DBC') label = '📊 COMMO';
-        
-        // ===== CRYPTO =====
-        else if (sym === 'BTC-USD') label = '₿ BTC';
-        else if (sym === 'ETH-USD') label = '⟠ ETH';
-        else if (sym === 'SOL-USD') label = '◎ SOL';
-        else if (sym === 'ADA-USD') label = '₳ ADA';
-        else if (sym === 'DOGE-USD') label = '🐕 DOGE';
-        else if (sym === 'XRP-USD') label = '✕ XRP';
-        else if (sym === 'BNB-USD') label = '🟡 BNB';
-        
-        // ===== FOREX =====
-        else if (sym === 'EURUSD=X') label = '🇪🇺🇺🇸 EUR/USD';
-        else if (sym === 'GBPUSD=X') label = '🇬🇧🇺🇸 GBP/USD';
-        else if (sym === 'USDJPY=X') label = '🇺🇸🇯🇵 USD/JPY';
-        else if (sym === 'USDCHF=X') label = '🇺🇸🇨🇭 USD/CHF';
-        else if (sym === 'AUDUSD=X') label = '🇦🇺🇺🇸 AUD/USD';
-        else if (sym === 'USDCAD=X') label = '🇺🇸🇨🇦 USD/CAD';
-        
-        // ===== US STOCKS =====
-        else if (sym === 'AAPL') label = '🍎 AAPL';
-        else if (sym === 'MSFT') label = '💻 MSFT';
-        else if (sym === 'GOOGL') label = '🔍 GOOGL';
-        else if (sym === 'NVDA') label = '🎮 NVDA';
-        else if (sym === 'TSLA') label = '🚗 TSLA';
-        else if (sym === 'AMZN') label = '📦 AMZN';
-        else if (sym === 'META') label = '📱 META';
-        else if (sym === 'JPM') label = '🏦 JPM';
-        
-        // ===== PARIS STOCKS =====
-        else if (sym === 'ML.PA') label = '👔 LVMH';
-        else if (sym === 'SAN.PA') label = '💊 SANOFI';
-        else if (sym === 'BNP.PA') label = '🏛️ BNP';
-        else if (sym === 'OR.PA') label = '💄 LOREAL';
-        else if (sym === 'AI.PA') label = '💨 AIR LIQUIDE';
-        
-        // ===== EAU =====
-        else if (sym === 'PHO') label = '🌊 PHO';
-        else if (sym === 'FIW') label = '🌊 FIW';
-        else if (sym === 'CGW') label = '🌊 CGW';
-        else if (sym === 'AWK') label = '💧 AWK';
-        else if (sym === 'XYL') label = '💧 XYL';
-        
-        // ===== BRICS & EM =====
-        else if (sym === 'EEM') label = '🌍 EM MSCI';
-        else if (sym === 'VWO') label = '🌍 Vanguard EM';
-        else if (sym === 'IEMG') label = '🌍 iShares EM';
-        else if (sym === 'FXI') label = '🇨🇳 CHINA';
-        else if (sym === 'EWZ') label = '🇧🇷 BRAZIL';
-        else if (sym === 'EZA') label = '🇿🇦 S.AFRICA';
-        else if (sym === 'EPI') label = '🇮🇳 INDIA';
-        else if (sym === 'EWW') label = '🇲🇽 MEXICO';
-        else if (sym === 'TUR') label = '🇹🇷 TURKEY';
-        else if (sym === 'THD') label = '🇹🇭 THAILAND';
-        
-        // ===== FUNDS =====
-        else if (sym === 'SPY') label = '📊 SPY';
-        else if (sym === 'QQQ') label = '📈 QQQ';
-        else if (sym === 'VTI') label = '🌎 VTI';
-        else if (sym === 'VOO') label = '📊 VOO';
-        else if (sym === 'IVV') label = '📊 IVV';
-        else if (sym === 'DIA') label = '📊 DIA';
-        else if (sym === 'IWM') label = '📊 IWM';
-        else if (sym === 'BND') label = '🔵 BND';
-        else if (sym === 'AGG') label = '🔵 AGG';
-        else if (sym === 'VGK') label = '🇪🇺 VGK';
-        else if (sym === 'VPL') label = '🌏 VPL';
-        else if (sym === 'SCHD') label = '💰 SCHD';
-        else if (sym === 'JEPI') label = '🏦 JEPI';
-        else if (sym === 'GDX') label = '⛏️ GDX';
-        else if (sym === 'XLE') label = '🛢️ XLE';
-        else if (sym === 'XLF') label = '🏛️ XLF';
-        else if (sym === 'XLK') label = '💻 XLK';
-        else if (sym === 'XLV') label = '💊 XLV';
-        else if (sym === 'XLI') label = '🏗️ XLI';
-        else if (sym === 'XLP') label = '🛒 XLP';
-        else if (sym === 'XLY') label = '🛍️ XLY';
-        
-        // ===== INDICES =====
-        else if (sym === '^GSPC') label = '📈 S&P500';
-        else if (sym === '^DJI') label = '📈 DOW JONES';
-        else if (sym === '^IXIC') label = '📈 NASDAQ';
-        else if (sym === '^RUT') label = '📈 RUSSELL';
-        else if (sym === '^FTSE') label = '🇬🇧 FTSE';
-        else if (sym === '^GDAXI') label = '🇩🇪 DAX';
-        else if (sym === '^N225') label = '🇯🇵 NIKKEI';
-        else if (sym === '^HSI') label = '🇭🇰 HANG SENG';
-        else if (sym === '^FCHI') label = '🇫🇷 CAC 40';  // <-- CAC 40
-        else if (sym === '^STOXX50E') label = '🇪🇺 STOXX 50';
-        
-        // ===== SPACE =====
-        else if (sym === 'SPCE') label = '🚀 Virgin Galactic';
-        else if (sym === 'RKLB') label = '🚀 Rocket Lab';
-        else if (sym === 'ASTS') label = '📡 AST SpaceMobile';
-        else if (sym === 'PL') label = '🛰️ Planet Labs';
-        else if (sym === 'RDW') label = '🔧 Redwire';
-        else if (sym === 'MNTS') label = '🚀 Momentus';
-        else if (sym === 'BKSY') label = '🛰️ BlackSky';
-        else if (sym === 'GSAT') label = '📡 Globalstar';
-        else if (sym === 'IRDM') label = '📡 Iridium';
-        else if (sym === 'UFO') label = '🛸 Procure Space ETF';
-        else if (sym === 'ARKX') label = '🚀 ARK Space ETF';
-        else if (sym === 'ROKT') label = '✈️ SPDR Aerospace ETF';
-        
-        else label = sym;
-        
-        html += '<button class="btn btn-sm" onclick="quickSelect(\'' + sym + '\')">' + label + '</button>';
-        count++;
-    });
-    container.innerHTML = html;
-}
+            var container = document.getElementById('quick-buttons-' + category);
+            if (!container) return;
+            var symbols = categorySymbols[category] || [];
+            var html = '';
+            var count = 0;
+            symbols.forEach(function(sym) {
+                if (count >= 30) return;
+                var label = sym;
+                if (sym === 'GLD') label = '🥇 OR';
+                else if (sym === 'SLV') label = '🥈 ARGENT';
+                else if (sym === 'USO') label = '🛢️ WTI';
+                else if (sym === 'BNO') label = '🛢️ BRENT';
+                else if (sym === 'UNG') label = '🔥 GAZ';
+                else if (sym === 'CORN') label = '🌽 MAIS';
+                else if (sym === 'WEAT') label = '🌾 BLE';
+                else if (sym === 'SOYB') label = '🌱 SOJA';
+                else if (sym === 'CPER') label = '🔶 CUIVRE';
+                else if (sym === 'DBC') label = '📊 COMMO';
+                else if (sym === 'BTC-USD') label = '₿ BTC';
+                else if (sym === 'ETH-USD') label = '⟠ ETH';
+                else if (sym === 'SOL-USD') label = '◎ SOL';
+                else if (sym === 'ADA-USD') label = '₳ ADA';
+                else if (sym === 'DOGE-USD') label = '🐕 DOGE';
+                else if (sym === 'XRP-USD') label = '✕ XRP';
+                else if (sym === 'BNB-USD') label = '🟡 BNB';
+                else if (sym === 'EURUSD=X') label = '🇪🇺🇺🇸 EUR/USD';
+                else if (sym === 'GBPUSD=X') label = '🇬🇧🇺🇸 GBP/USD';
+                else if (sym === 'USDJPY=X') label = '🇺🇸🇯🇵 USD/JPY';
+                else if (sym === 'AAPL') label = '🍎 AAPL';
+                else if (sym === 'MSFT') label = '💻 MSFT';
+                else if (sym === 'GOOGL') label = '🔍 GOOGL';
+                else if (sym === 'NVDA') label = '🎮 NVDA';
+                else if (sym === 'TSLA') label = '🚗 TSLA';
+                else if (sym === 'AMZN') label = '📦 AMZN';
+                else if (sym === 'META') label = '📱 META';
+                else if (sym === 'JPM') label = '🏦 JPM';
+                else if (sym === 'ML.PA') label = '👔 LVMH';
+                else if (sym === 'SAN.PA') label = '💊 SANOFI';
+                else if (sym === 'BNP.PA') label = '🏛️ BNP';
+                else if (sym === 'OR.PA') label = '💄 LOREAL';
+                else if (sym === 'AI.PA') label = '💨 AIR LIQUIDE';
+                else if (sym === 'PHO') label = '🌊 PHO';
+                else if (sym === 'FIW') label = '🌊 FIW';
+                else if (sym === 'CGW') label = '🌊 CGW';
+                else if (sym === 'AWK') label = '💧 AWK';
+                else if (sym === 'XYL') label = '💧 XYL';
+                else if (sym === 'EEM') label = '🌍 EM MSCI';
+                else if (sym === 'VWO') label = '🌍 Vanguard EM';
+                else if (sym === 'IEMG') label = '🌍 iShares EM';
+                else if (sym === 'FXI') label = '🇨🇳 CHINA';
+                else if (sym === 'EWZ') label = '🇧🇷 BRAZIL';
+                else if (sym === 'EZA') label = '🇿🇦 S.AFRICA';
+                else if (sym === 'EPI') label = '🇮🇳 INDIA';
+                else if (sym === 'EWW') label = '🇲🇽 MEXICO';
+                else if (sym === 'TUR') label = '🇹🇷 TURKEY';
+                else if (sym === 'THD') label = '🇹🇭 THAILAND';
+                else if (sym === 'SPY') label = '📊 SPY';
+                else if (sym === 'QQQ') label = '📈 QQQ';
+                else if (sym === 'VTI') label = '🌎 VTI';
+                else if (sym === 'VOO') label = '📊 VOO';
+                else if (sym === 'IVV') label = '📊 IVV';
+                else if (sym === 'DIA') label = '📊 DIA';
+                else if (sym === 'IWM') label = '📊 IWM';
+                else if (sym === 'BND') label = '🔵 BND';
+                else if (sym === 'AGG') label = '🔵 AGG';
+                else if (sym === 'VGK') label = '🇪🇺 VGK';
+                else if (sym === 'VPL') label = '🌏 VPL';
+                else if (sym === 'SCHD') label = '💰 SCHD';
+                else if (sym === 'JEPI') label = '🏦 JEPI';
+                else if (sym === 'GDX') label = '⛏️ GDX';
+                else if (sym === 'XLE') label = '🛢️ XLE';
+                else if (sym === 'XLF') label = '🏛️ XLF';
+                else if (sym === 'XLK') label = '💻 XLK';
+                else if (sym === 'XLV') label = '💊 XLV';
+                else if (sym === 'XLI') label = '🏗️ XLI';
+                else if (sym === 'XLP') label = '🛒 XLP';
+                else if (sym === 'XLY') label = '🛍️ XLY';
+                else if (sym === '^GSPC') label = '📈 S&P500';
+                else if (sym === '^DJI') label = '📈 DOW JONES';
+                else if (sym === '^IXIC') label = '📈 NASDAQ';
+                else if (sym === '^RUT') label = '📈 RUSSELL';
+                else if (sym === '^FTSE') label = '🇬🇧 FTSE';
+                else if (sym === '^GDAXI') label = '🇩🇪 DAX';
+                else if (sym === '^N225') label = '🇯🇵 NIKKEI';
+                else if (sym === '^HSI') label = '🇭🇰 HANG SENG';
+                else if (sym === '^FCHI') label = '🇫🇷 CAC 40';
+                else if (sym === '^STOXX50E') label = '🇪🇺 STOXX 50';
+                else if (sym === 'SPCE') label = '🚀 Virgin Galactic';
+                else if (sym === 'RKLB') label = '🚀 Rocket Lab';
+                else if (sym === 'ASTS') label = '📡 AST SpaceMobile';
+                else if (sym === 'PL') label = '🛰️ Planet Labs';
+                else if (sym === 'RDW') label = '🔧 Redwire';
+                else if (sym === 'MNTS') label = '🚀 Momentus';
+                else if (sym === 'BKSY') label = '🛰️ BlackSky';
+                else if (sym === 'GSAT') label = '📡 Globalstar';
+                else if (sym === 'IRDM') label = '📡 Iridium';
+                else if (sym === 'UFO') label = '🛸 Procure Space ETF';
+                else if (sym === 'ARKX') label = '🚀 ARK Space ETF';
+                else if (sym === 'ROKT') label = '✈️ SPDR Aerospace ETF';
+                else label = sym;
+                html += '<button class="btn btn-sm" onclick="quickSelect(\'' + sym + '\')">' + label + '</button>';
+                count++;
+            });
+            container.innerHTML = html;
+        }
+
         // ================================================================
         // FETCH DATA PAR TAB
         // ================================================================
@@ -1571,6 +1627,30 @@
 
             var prefix = '-' + category;
 
+            // Barres de probabilités IA
+            var probContainer = document.getElementById('ia-prob' + prefix);
+            if (probContainer && data.ia_probabilities) {
+                probContainer.style.display = 'block';
+                var probs = data.ia_probabilities;
+                var sellBar = document.getElementById('ia-bar-sell' + prefix);
+                var neutralBar = document.getElementById('ia-bar-neutral' + prefix);
+                var buyBar = document.getElementById('ia-bar-buy' + prefix);
+                if (sellBar) sellBar.style.width = probs.vente + '%';
+                if (neutralBar) neutralBar.style.width = probs.neutre + '%';
+                if (buyBar) buyBar.style.width = probs.achat + '%';
+            }
+
+            var statusEl = document.getElementById('ia-status' + prefix);
+            if (statusEl) {
+                if (data.ia_recommendation) {
+                    var rec = data.ia_recommendation;
+                    var emoji = rec === 'ACHAT' ? '🟢' : rec === 'VENTE' ? '🔴' : '🟡';
+                    statusEl.textContent = 'IA: ' + emoji + ' ' + rec + ' (Confiance: ' + (data.ia_confidence || 50).toFixed(0) + '%)';
+                } else {
+                    statusEl.textContent = 'IA: En attente...';
+                }
+            }
+
             var scoreEl = document.getElementById('ia-score' + prefix);
             if (scoreEl) {
                 var score = data.score || 0;
@@ -1581,7 +1661,8 @@
 
             var recoEl = document.getElementById('ia-reco' + prefix);
             if (recoEl) {
-                var rec = data.recommendation || 'NEUTRE';
+                // Utiliser la recommandation IA si disponible
+                var rec = data.ia_recommendation || data.recommendation || 'NEUTRE';
                 var color = rec === 'ACHAT' ? '#33ff33' : rec === 'VENTE' ? '#ff3333' : '#ffaa00';
                 recoEl.textContent = rec;
                 recoEl.style.color = color;
@@ -1589,7 +1670,8 @@
 
             var confEl = document.getElementById('ia-conf' + prefix);
             if (confEl) {
-                confEl.textContent = (data.confidence || 50).toFixed(0) + '%';
+                var conf = data.ia_confidence || data.confidence || 50;
+                confEl.textContent = conf.toFixed(0) + '%';
             }
 
             var signals = data.signals || [];
@@ -1622,8 +1704,8 @@
 
             var recoContainer = document.getElementById('recommendation-container' + prefix);
             if (recoContainer) {
-                var rec = data.recommendation || 'NEUTRE';
-                var conf = data.confidence || 50;
+                var rec = data.ia_recommendation || data.recommendation || 'NEUTRE';
+                var conf = data.ia_confidence || data.confidence || 50;
                 var sl = data.stop_loss || 0;
                 var tp = data.take_profit || 0;
 

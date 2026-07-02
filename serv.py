@@ -15,8 +15,12 @@ import json
 import time
 import threading
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import make_pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import pickle
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -72,6 +76,259 @@ def safe_int(v, default=0):
         return int(v)
     except:
         return default
+
+# ============================================================
+# MODÈLE IA AVEC RANDOM FOREST
+# ============================================================
+
+class TradingAI:
+    def __init__(self):
+        self.model = None
+        self.scaler = StandardScaler()
+        self.model_path = 'trading_model.pkl'
+        self.scaler_path = 'scaler.pkl'
+        self.is_trained = False
+        self.load_model()
+    
+    def load_model(self):
+        """Charge le modèle s'il existe"""
+        try:
+            if os.path.exists(self.model_path) and os.path.exists(self.scaler_path):
+                with open(self.model_path, 'rb') as f:
+                    self.model = pickle.load(f)
+                with open(self.scaler_path, 'rb') as f:
+                    self.scaler = pickle.load(f)
+                self.is_trained = True
+                logger.info("✅ Modèle IA chargé avec succès")
+            else:
+                logger.info("🔄 Modèle IA non trouvé, entraînement automatique...")
+                self.train_model()
+        except Exception as e:
+            logger.error(f"Erreur chargement modèle: {e}")
+            self.is_trained = False
+    
+    def train_model(self):
+        """Entraîne le modèle sur des données historiques"""
+        try:
+            # Récupérer les données de plusieurs symboles
+            symbols = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'TSLA', 'AMZN', 'META', 'JPM', 'GLD', 'SPY']
+            all_features = []
+            all_labels = []
+            
+            for symbol in symbols:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    hist = ticker.history(period='2y')
+                    if len(hist) < 100:
+                        continue
+                    
+                    # Calculer les caractéristiques
+                    features = self.extract_features(hist)
+                    labels = self.generate_labels(hist)
+                    
+                    # Aligner les données
+                    min_len = min(len(features), len(labels))
+                    if min_len > 50:
+                        all_features.extend(features[:min_len])
+                        all_labels.extend(labels[:min_len])
+                except Exception as e:
+                    logger.warning(f"Erreur traitement {symbol}: {e}")
+                    continue
+            
+            if len(all_features) < 100:
+                logger.warning("⚠️ Pas assez de données pour entraîner le modèle")
+                self.is_trained = False
+                return
+            
+            # Convertir en numpy arrays
+            X = np.array(all_features)
+            y = np.array(all_labels)
+            
+            # Normaliser
+            X_scaled = self.scaler.fit_transform(X)
+            
+            # Split
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_scaled, y, test_size=0.2, random_state=42
+            )
+            
+            # Entraîner le modèle
+            self.model = RandomForestClassifier(
+                n_estimators=150,
+                max_depth=12,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1
+            )
+            self.model.fit(X_train, y_train)
+            
+            # Évaluer
+            y_pred = self.model.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            # Sauvegarder
+            with open(self.model_path, 'wb') as f:
+                pickle.dump(self.model, f)
+            with open(self.scaler_path, 'wb') as f:
+                pickle.dump(self.scaler, f)
+            
+            self.is_trained = True
+            logger.info(f"✅ Modèle IA entraîné avec précision: {accuracy:.2%}")
+            
+        except Exception as e:
+            logger.error(f"Erreur entraînement: {e}")
+            self.is_trained = False
+    
+    def extract_features(self, df):
+        """Extrait les caractéristiques pour l'IA"""
+        features = []
+        for i in range(50, len(df)):
+            window = df.iloc[i-50:i]
+            
+            # Prix
+            close = window['Close'].values
+            high = window['High'].values
+            low = window['Low'].values
+            volume = window['Volume'].values
+            
+            # 1. Variations de prix
+            returns = np.diff(close) / close[:-1]
+            volatility = np.std(returns) * np.sqrt(252)
+            
+            # 2. Moyennes mobiles
+            sma_20 = np.mean(close[-20:])
+            sma_50 = np.mean(close[-50:])
+            price_vs_sma20 = (close[-1] / sma_20) - 1
+            price_vs_sma50 = (close[-1] / sma_50) - 1
+            
+            # 3. RSI
+            gains = np.maximum(np.diff(close), 0)
+            losses = np.maximum(-np.diff(close), 0)
+            avg_gain = np.mean(gains[-14:]) if len(gains) >= 14 else 0
+            avg_loss = np.mean(losses[-14:]) if len(losses) >= 14 else 0
+            rsi = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100
+            
+            # 4. MACD
+            ema_12 = np.mean(close[-12:]) if len(close) >= 12 else close[-1]
+            ema_26 = np.mean(close[-26:]) if len(close) >= 26 else close[-1]
+            macd = ema_12 - ema_26
+            
+            # 5. Bollinger
+            std = np.std(close[-20:]) if len(close) >= 20 else 0
+            bb_upper = sma_20 + 2 * std
+            bb_lower = sma_20 - 2 * std
+            bb_position = (close[-1] - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+            
+            # 6. Volume
+            volume_avg = np.mean(volume[-20:]) if len(volume) >= 20 else volume[-1]
+            volume_ratio = volume[-1] / volume_avg if volume_avg > 0 else 1
+            
+            # 7. Momentum
+            momentum = (close[-1] / close[-10]) - 1 if len(close) >= 10 else 0
+            
+            # 8. Stochastic
+            high_max = np.max(high[-14:]) if len(high) >= 14 else high[-1]
+            low_min = np.min(low[-14:]) if len(low) >= 14 else low[-1]
+            stoch = ((close[-1] - low_min) / (high_max - low_min)) * 100 if high_max > low_min else 50
+            
+            # 9. ATR
+            tr = []
+            for j in range(1, len(window)):
+                hl = window.iloc[j]['High'] - window.iloc[j]['Low']
+                hc = abs(window.iloc[j]['High'] - window.iloc[j-1]['Close'])
+                lc = abs(window.iloc[j]['Low'] - window.iloc[j-1]['Close'])
+                tr.append(max(hl, hc, lc))
+            atr = np.mean(tr[-14:]) if len(tr) >= 14 else 0
+            
+            features.append([
+                volatility,
+                price_vs_sma20,
+                price_vs_sma50,
+                rsi / 100,  # Normalisé
+                macd / close[-1],  # Normalisé
+                bb_position,
+                min(volume_ratio, 10),  # Limité à 10
+                momentum * 100,
+                stoch / 100,  # Normalisé
+                atr / close[-1],  # Normalisé
+                returns[-1] * 100 if len(returns) > 0 else 0
+            ])
+        
+        return features
+    
+    def generate_labels(self, df):
+        """Génère les labels (buy/sell/neutral) pour l'entraînement"""
+        labels = []
+        close = df['Close'].values
+        
+        for i in range(50, len(close) - 5):
+            current_price = close[i]
+            future_price = close[i + 5]  # 5 jours plus tard
+            
+            # Si le prix augmente de plus de 2% → BUY
+            if (future_price / current_price) > 1.025:
+                labels.append(2)  # BUY
+            # Si le prix baisse de plus de 2% → SELL
+            elif (future_price / current_price) < 0.975:
+                labels.append(0)  # SELL
+            # Sinon → NEUTRAL
+            else:
+                labels.append(1)  # NEUTRAL
+        
+        # Ajouter des labels pour les derniers points (padding)
+        while len(labels) < len(close) - 50:
+            labels.append(1)
+        
+        return labels
+    
+    def predict(self, candles):
+        """Fait une prédiction sur les données actuelles"""
+        if not self.is_trained or self.model is None:
+            return None
+        
+        try:
+            # Convertir les chandeliers en DataFrame
+            df = pd.DataFrame(candles)
+            
+            if len(df) < 50:
+                return None
+            
+            # Extraire les caractéristiques
+            features = self.extract_features(df)
+            
+            if not features:
+                return None
+            
+            # Prendre la dernière
+            X = np.array([features[-1]])
+            X_scaled = self.scaler.transform(X)
+            
+            # Prédire
+            prediction = self.model.predict(X_scaled)[0]
+            probabilities = self.model.predict_proba(X_scaled)[0]
+            
+            # Mapping
+            pred_map = {0: 'VENTE', 1: 'NEUTRE', 2: 'ACHAT'}
+            label = pred_map.get(prediction, 'NEUTRE')
+            confidence = np.max(probabilities) * 100
+            
+            return {
+                'recommendation': label,
+                'confidence': confidence,
+                'probabilities': {
+                    'vente': probabilities[0] * 100,
+                    'neutre': probabilities[1] * 100,
+                    'achat': probabilities[2] * 100
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur prédiction IA: {e}")
+            return None
+
+# Initialiser l'IA
+trading_ai = TradingAI()
 
 # ============================================================
 # DONNÉES FONDAMENTALES PAR DÉFAUT (FALLBACK)
@@ -298,7 +555,7 @@ ASSETS = {
     '^FCHI': {'name': 'CAC 40', 'exchange': 'Euronext', 'category': 'INDICES', 'icon': '🇫🇷', 'color': '#002395', 'sector': 'Index'},
     '^STOXX50E': {'name': 'Euro Stoxx 50', 'exchange': 'EURONEXT', 'category': 'INDICES', 'icon': '🇪🇺', 'color': '#003399', 'sector': 'Index'},
 
-    # ========== SPACE & AEROSPACE ==========
+    # ========== SPACE ==========
     'SPCE': {'name': 'Virgin Galactic', 'exchange': 'NYSE', 'category': 'SPACE', 'icon': '🚀', 'color': '#ff6b00', 'sector': 'Aerospace'},
     'RKLB': {'name': 'Rocket Lab', 'exchange': 'NASDAQ', 'category': 'SPACE', 'icon': '🚀', 'color': '#00aaff', 'sector': 'Aerospace'},
     'ASTS': {'name': 'AST SpaceMobile', 'exchange': 'NASDAQ', 'category': 'SPACE', 'icon': '📡', 'color': '#00cc88', 'sector': 'Telecom'},
@@ -460,7 +717,6 @@ def get_fundamental_data(symbol):
         ticker = yf.Ticker(symbol)
         info = ticker.info
         
-        # Si info est vide, utiliser le fallback
         if not info or info.get('sector') is None:
             fallback = FUNDAMENTAL_FALLBACK.get(symbol, {})
             if fallback:
@@ -505,7 +761,6 @@ def get_fundamental_data(symbol):
             'two_hundred_day_average': info.get('twoHundredDayAverage', None),
         }
         
-        # Si toutes les valeurs sont N/A ou None, utiliser le fallback
         all_na = all(v == 'N/A' or v is None or v == 0 for v in fundamental.values())
         if all_na:
             fallback = FUNDAMENTAL_FALLBACK.get(symbol, {})
@@ -519,7 +774,6 @@ def get_fundamental_data(symbol):
                 fundamental[key] = 'N/A'
         return fundamental
     except Exception as e:
-        # En cas d'erreur, utiliser le fallback
         fallback = FUNDAMENTAL_FALLBACK.get(symbol, {})
         if fallback:
             return fallback
@@ -528,10 +782,12 @@ def get_fundamental_data(symbol):
 def calculate_all_indicators(candles):
     if not candles or len(candles) < 20:
         return {}
+    
     close = [c['close'] for c in candles]
     high = [c['high'] for c in candles]
     low = [c['low'] for c in candles]
     current_price = close[-1] if close else 0
+    
     indicators = {}
     indicators['sma_20'] = calculate_sma(close, 20)
     indicators['sma_50'] = calculate_sma(close, 50)
@@ -570,9 +826,10 @@ def calculate_all_indicators(candles):
     indicators['last_bb_lower'] = indicators['bb_lower'][-1] if indicators['bb_lower'] and indicators['bb_lower'][-1] is not None else None
     indicators['last_atr'] = indicators['atr'][-1] if indicators['atr'] and indicators['atr'][-1] is not None else None
 
-    # Signaux IA
+    # Signaux IA (fallback sur règles simples si l'IA n'est pas disponible)
     signals = []
     score = 0
+    
     if indicators['last_rsi'] is not None:
         if indicators['last_rsi'] < 30:
             signals.append({'type': 'buy', 'indicator': 'RSI', 'value': f"{indicators['last_rsi']:.1f}", 'message': 'Zone de survente'})
@@ -580,6 +837,7 @@ def calculate_all_indicators(candles):
         elif indicators['last_rsi'] > 70:
             signals.append({'type': 'sell', 'indicator': 'RSI', 'value': f"{indicators['last_rsi']:.1f}", 'message': 'Zone de surachat'})
             score -= 15
+    
     if indicators['last_macd'] is not None and indicators['last_macd_signal'] is not None and len(indicators['macd']) > 1:
         prev_macd = indicators['macd'][-2]
         prev_signal = indicators['macd_signal'][-2]
@@ -590,6 +848,7 @@ def calculate_all_indicators(candles):
             elif prev_macd > prev_signal and indicators['last_macd'] < indicators['last_macd_signal']:
                 signals.append({'type': 'sell', 'indicator': 'MACD', 'value': f"{indicators['last_macd']:.3f}", 'message': 'Croisement baissier'})
                 score -= 15
+    
     if indicators['last_sma_20'] is not None and indicators['last_sma_50'] is not None:
         prev_sma20 = indicators['sma_20'][-2] if len(indicators['sma_20']) > 1 else None
         prev_sma50 = indicators['sma_50'][-2] if len(indicators['sma_50']) > 1 else None
@@ -600,6 +859,7 @@ def calculate_all_indicators(candles):
             elif prev_sma20 > prev_sma50 and indicators['last_sma_20'] < indicators['last_sma_50']:
                 signals.append({'type': 'sell', 'indicator': 'SMA', 'value': 'Death Cross', 'message': 'Croisement baissier 20/50'})
                 score -= 12
+    
     if indicators['last_stoch_k'] is not None and indicators['last_stoch_d'] is not None:
         if indicators['last_stoch_k'] < 20 and indicators['last_stoch_d'] < 20:
             signals.append({'type': 'buy', 'indicator': 'Stochastic', 'value': f"K:{indicators['last_stoch_k']:.1f}", 'message': 'Zone de survente'})
@@ -607,6 +867,7 @@ def calculate_all_indicators(candles):
         elif indicators['last_stoch_k'] > 80 and indicators['last_stoch_d'] > 80:
             signals.append({'type': 'sell', 'indicator': 'Stochastic', 'value': f"K:{indicators['last_stoch_k']:.1f}", 'message': 'Zone de surachat'})
             score -= 10
+    
     if indicators['last_bb_lower'] is not None and indicators['last_bb_upper'] is not None:
         if current_price <= indicators['last_bb_lower'] * 1.01:
             signals.append({'type': 'buy', 'indicator': 'Bollinger', 'value': f"${current_price:.2f}", 'message': 'Proche bande inférieure'})
@@ -614,16 +875,19 @@ def calculate_all_indicators(candles):
         elif current_price >= indicators['last_bb_upper'] * 0.99:
             signals.append({'type': 'sell', 'indicator': 'Bollinger', 'value': f"${current_price:.2f}", 'message': 'Proche bande supérieure'})
             score -= 8
+    
     if indicators['momentum'] > 5:
         signals.append({'type': 'buy', 'indicator': 'Momentum', 'value': f"{indicators['momentum']:.1f}%", 'message': 'Momentum haussier'})
         score += 8
     elif indicators['momentum'] < -5:
         signals.append({'type': 'sell', 'indicator': 'Momentum', 'value': f"{indicators['momentum']:.1f}%", 'message': 'Momentum baissier'})
         score -= 8
+    
     if indicators['volatility'] > 50:
         signals.append({'type': 'neutral', 'indicator': 'Volatilité', 'value': f"{indicators['volatility']:.1f}%", 'message': 'Volatilité élevée'})
     elif indicators['volatility'] < 15:
         signals.append({'type': 'neutral', 'indicator': 'Volatilité', 'value': f"{indicators['volatility']:.1f}%", 'message': 'Volatilité faible'})
+    
     if score > 20:
         recommendation = 'ACHAT'
         confidence = min(95, 50 + abs(score) * 0.8)
@@ -634,12 +898,14 @@ def calculate_all_indicators(candles):
         recommendation = 'NEUTRE'
         confidence = 50 + (abs(score) / 2)
     confidence = min(95, max(15, confidence))
+    
     if indicators['last_atr'] is not None and indicators['last_atr'] > 0:
         indicators['stop_loss'] = current_price - 2 * indicators['last_atr']
         indicators['take_profit'] = current_price + 2 * indicators['last_atr']
     else:
         indicators['stop_loss'] = current_price * 0.975
         indicators['take_profit'] = current_price * 1.05
+    
     indicators['signals'] = signals
     indicators['recommendation'] = recommendation
     indicators['confidence'] = confidence
@@ -647,6 +913,22 @@ def calculate_all_indicators(candles):
     indicators['buy_signals'] = sum(1 for s in signals if s['type'] == 'buy')
     indicators['sell_signals'] = sum(1 for s in signals if s['type'] == 'sell')
     indicators['is_strong_signal'] = (score > 30 or score < -30) and confidence > 70
+    
+    # === PRÉDICTION IA ===
+    ia_prediction = trading_ai.predict(candles)
+    if ia_prediction:
+        indicators['ia_recommendation'] = ia_prediction['recommendation']
+        indicators['ia_confidence'] = ia_prediction['confidence']
+        indicators['ia_probabilities'] = ia_prediction['probabilities']
+    else:
+        indicators['ia_recommendation'] = recommendation
+        indicators['ia_confidence'] = confidence
+        indicators['ia_probabilities'] = {
+            'vente': max(0, 100 - confidence),
+            'neutre': confidence,
+            'achat': max(0, confidence - 20)
+        }
+    
     try:
         if len(close) >= 30:
             x = np.arange(len(close)).reshape(-1, 1)
@@ -660,7 +942,36 @@ def calculate_all_indicators(candles):
             indicators['predictions'] = [current_price] * 5
     except:
         indicators['predictions'] = [current_price] * 5
+    
     return indicators
+
+def generate_mock_insights(symbol):
+    """Génère des données simulées quand l'API échoue"""
+    return {
+        'symbol': symbol,
+        'name': ASSETS.get(symbol, {}).get('name', symbol),
+        'icon': ASSETS.get(symbol, {}).get('icon', '📈'),
+        'current_price': 100.0,
+        'last_rsi': 50.0,
+        'last_macd': 0.0,
+        'last_macd_signal': 0.0,
+        'volatility': 10.0,
+        'momentum': 0.0,
+        'signals': [{'type': 'neutral', 'indicator': 'System', 'value': 'N/A', 'message': 'Données insuffisantes pour l\'IA'}],
+        'recommendation': 'NEUTRE',
+        'confidence': 50.0,
+        'score': 0,
+        'buy_signals': 0,
+        'sell_signals': 0,
+        'is_strong_signal': False,
+        'stop_loss': 97.5,
+        'take_profit': 105.0,
+        'predictions': [100.0, 100.0, 100.0, 100.0, 100.0],
+        'ia_recommendation': 'NEUTRE',
+        'ia_confidence': 50.0,
+        'ia_probabilities': {'vente': 30.0, 'neutre': 40.0, 'achat': 30.0},
+        'fundamental': FUNDAMENTAL_FALLBACK.get(symbol, {})
+    }
 
 # ============================================================
 # ROUTES
@@ -678,6 +989,22 @@ def favicon():
 def clear_cache():
     cache.clear()
     return jsonify({'status': 'ok'})
+
+@app.route('/api/train-ai')
+def train_ai():
+    """Route pour ré-entraîner le modèle IA"""
+    try:
+        trading_ai.train_model()
+        return jsonify({
+            'status': 'success',
+            'message': 'Modèle IA ré-entraîné avec succès',
+            'is_trained': trading_ai.is_trained
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 @app.route('/api/trading/<symbol>')
 def get_trading(symbol):
@@ -788,7 +1115,6 @@ def get_fundamental(symbol):
         return jsonify(result)
     except Exception as e:
         logger.error(f"Erreur fondamentale {symbol}: {e}")
-        # Retourner le fallback
         fallback = FUNDAMENTAL_FALLBACK.get(symbol, {})
         fallback['symbol'] = symbol
         fallback['name'] = ASSETS.get(symbol, {}).get('name', symbol)
@@ -807,92 +1133,10 @@ def get_insights(symbol):
             symbol = 'EEM'
 
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period='3mo')
+        hist = ticker.history(period='1y')  # Plus de données pour l'IA
 
-        # Si pas de données, générer des données simulées
-        if hist.empty or len(hist) < 30:
-            # Générer des données simulées pour les insights
-            current_price = 100.0
-            if symbol == 'SPY':
-                current_price = 450.0
-            elif symbol == 'QQQ':
-                current_price = 380.0
-            elif symbol == 'AAPL':
-                current_price = 175.0
-            elif symbol == 'GLD':
-                current_price = 195.0
-            elif symbol == 'BTC-USD':
-                current_price = 50000.0
-            elif symbol == 'EEM':
-                current_price = 42.0
-            elif symbol == '^GSPC':
-                current_price = 5000.0
-            elif symbol == '^DJI':
-                current_price = 38000.0
-            elif symbol == '^IXIC':
-                current_price = 16000.0
-            elif symbol == '^FCHI':
-                current_price = 7500.0
-            elif symbol == 'RKLB':
-                current_price = 8.0
-            elif symbol == 'SPCE':
-                current_price = 12.0
-            
-            # Créer des données simulées
-            mock_indicators = {
-                'symbol': symbol,
-                'name': ASSETS.get(symbol, {}).get('name', symbol),
-                'icon': ASSETS.get(symbol, {}).get('icon', '📈'),
-                'current_price': current_price,
-                'last_rsi': 55.0,
-                'last_macd': 0.5,
-                'last_macd_signal': 0.3,
-                'last_sma_20': current_price * 0.98,
-                'last_sma_50': current_price * 0.97,
-                'last_sma_200': current_price * 0.95,
-                'last_stoch_k': 65.0,
-                'last_stoch_d': 60.0,
-                'last_bb_upper': current_price * 1.02,
-                'last_bb_middle': current_price,
-                'last_bb_lower': current_price * 0.98,
-                'last_atr': current_price * 0.01,
-                'volatility': 15.0,
-                'momentum': 2.5,
-                'signals': [
-                    {'type': 'neutral', 'indicator': 'RSI', 'value': '55.0', 'message': 'Zone neutre'},
-                    {'type': 'buy', 'indicator': 'MACD', 'value': '0.5', 'message': 'Croisement haussier'}
-                ],
-                'recommendation': 'NEUTRE',
-                'confidence': 65.0,
-                'score': 5.0,
-                'buy_signals': 1,
-                'sell_signals': 0,
-                'is_strong_signal': False,
-                'stop_loss': current_price * 0.975,
-                'take_profit': current_price * 1.05,
-                'predictions': [current_price * 1.01, current_price * 1.02, current_price * 1.025, current_price * 1.03, current_price * 1.035],
-                'fundamental': FUNDAMENTAL_FALLBACK.get(symbol, {
-                    'sector': 'N/A',
-                    'industry': 'N/A',
-                    'pe_ratio': 'N/A',
-                    'dividend_yield': 'N/A',
-                    'market_cap': 0,
-                    'beta': 'N/A',
-                    'eps': 'N/A',
-                    'profit_margin': 'N/A',
-                    'return_on_equity': 'N/A',
-                    'debt_to_equity': 'N/A',
-                    'fifty_two_week_high': 'N/A',
-                    'fifty_two_week_low': 'N/A'
-                }),
-                'pe_ratio': 'N/A',
-                'dividend_yield': 'N/A',
-                'market_cap': 0,
-                'sector': 'N/A',
-                'beta': 'N/A'
-            }
-            set_cached(f"insights_{symbol}", mock_indicators)
-            return jsonify(mock_indicators)
+        if hist.empty or len(hist) < 50:
+            return jsonify(generate_mock_insights(symbol))
 
         candles = []
         for idx, row in hist.iterrows():
@@ -904,28 +1148,17 @@ def get_insights(symbol):
                 'close': safe_float(row['Close']),
                 'volume': safe_int(row['Volume'])
             })
+        
+        # Calculer les indicateurs avec l'IA
         indicators = calculate_all_indicators(candles)
         indicators['symbol'] = symbol
         indicators['name'] = ASSETS.get(symbol, {}).get('name', symbol)
         indicators['icon'] = ASSETS.get(symbol, {}).get('icon', '📈')
         
-        # Obtenir les données fondamentales avec fallback
+        # Obtenir les données fondamentales
         fundamental = get_fundamental_data(symbol)
         if not fundamental or fundamental.get('error'):
-            fundamental = FUNDAMENTAL_FALLBACK.get(symbol, {
-                'sector': 'N/A',
-                'industry': 'N/A',
-                'pe_ratio': 'N/A',
-                'dividend_yield': 'N/A',
-                'market_cap': 0,
-                'beta': 'N/A',
-                'eps': 'N/A',
-                'profit_margin': 'N/A',
-                'return_on_equity': 'N/A',
-                'debt_to_equity': 'N/A',
-                'fifty_two_week_high': 'N/A',
-                'fifty_two_week_low': 'N/A'
-            })
+            fundamental = FUNDAMENTAL_FALLBACK.get(symbol, {})
         
         indicators['fundamental'] = fundamental
         indicators['pe_ratio'] = fundamental.get('pe_ratio', 'N/A')
@@ -933,53 +1166,14 @@ def get_insights(symbol):
         indicators['market_cap'] = fundamental.get('market_cap', 0)
         indicators['sector'] = fundamental.get('sector', 'N/A')
         indicators['beta'] = fundamental.get('beta', 'N/A')
+        
         result = dict(indicators)
         set_cached(f"insights_{symbol}", result)
         return jsonify(result)
+        
     except Exception as e:
         logger.error(f"Erreur insights {symbol}: {e}")
-        # Retourner des données simulées en cas d'erreur
-        mock_result = {
-            'symbol': symbol,
-            'name': ASSETS.get(symbol, {}).get('name', symbol),
-            'icon': ASSETS.get(symbol, {}).get('icon', '📈'),
-            'current_price': 100.0,
-            'last_rsi': 50.0,
-            'last_macd': 0.0,
-            'last_macd_signal': 0.0,
-            'volatility': 10.0,
-            'momentum': 0.0,
-            'signals': [{'type': 'neutral', 'indicator': 'System', 'value': 'N/A', 'message': 'Données temporairement indisponibles'}],
-            'recommendation': 'NEUTRE',
-            'confidence': 50.0,
-            'score': 0,
-            'buy_signals': 0,
-            'sell_signals': 0,
-            'is_strong_signal': False,
-            'stop_loss': 97.5,
-            'take_profit': 105.0,
-            'predictions': [100.0, 100.0, 100.0, 100.0, 100.0],
-            'fundamental': FUNDAMENTAL_FALLBACK.get(symbol, {
-                'sector': 'N/A',
-                'industry': 'N/A',
-                'pe_ratio': 'N/A',
-                'dividend_yield': 'N/A',
-                'market_cap': 0,
-                'beta': 'N/A',
-                'eps': 'N/A',
-                'profit_margin': 'N/A',
-                'return_on_equity': 'N/A',
-                'debt_to_equity': 'N/A',
-                'fifty_two_week_high': 'N/A',
-                'fifty_two_week_low': 'N/A'
-            }),
-            'pe_ratio': 'N/A',
-            'dividend_yield': 'N/A',
-            'market_cap': 0,
-            'sector': 'N/A',
-            'beta': 'N/A'
-        }
-        return jsonify(mock_result)
+        return jsonify(generate_mock_insights(symbol))
 
 @app.route('/api/watchlist')
 def get_watchlist():
@@ -988,7 +1182,6 @@ def get_watchlist():
         problematic = ['SBER.ME', 'GAZP.ME', 'LKOH.ME', 'ROSN.ME', 'GMKN.ME', 'MTSS.ME', 'NVTK.ME', 'RUAL.ME', 'AFLT.ME', 'YNDX.ME', 'MOEX.ME', 'RSX']
         working_symbols = [s for s in WATCHLIST if s not in problematic]
         
-        # Simuler des données si l'API échoue
         mock_prices = {
             'SPY': 450.0, 'QQQ': 380.0, 'AAPL': 175.0, 'MSFT': 350.0, 'GOOGL': 140.0,
             'NVDA': 120.0, 'TSLA': 250.0, 'AMZN': 180.0, 'META': 350.0, 'JPM': 150.0,
