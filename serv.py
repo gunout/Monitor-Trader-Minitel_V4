@@ -110,7 +110,6 @@ class TradingAI:
     def train_model(self):
         """Entraîne le modèle sur des données historiques"""
         try:
-            # Récupérer les données de plusieurs symboles
             symbols = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'TSLA', 'AMZN', 'META', 'JPM', 'GLD', 'SPY']
             all_features = []
             all_labels = []
@@ -122,11 +121,17 @@ class TradingAI:
                     if len(hist) < 100:
                         continue
                     
-                    # Calculer les caractéristiques
-                    features = self.extract_features(hist)
-                    labels = self.generate_labels(hist)
+                    # Convertir en format standard
+                    df = hist.reset_index()
+                    if 'Close' in df.columns:
+                        df['close'] = df['Close']
+                        df['high'] = df['High']
+                        df['low'] = df['Low']
+                        df['volume'] = df['Volume']
                     
-                    # Aligner les données
+                    features = self.extract_features(df)
+                    labels = self.generate_labels(df)
+                    
                     min_len = min(len(features), len(labels))
                     if min_len > 50:
                         all_features.extend(features[:min_len])
@@ -140,19 +145,15 @@ class TradingAI:
                 self.is_trained = False
                 return
             
-            # Convertir en numpy arrays
             X = np.array(all_features)
             y = np.array(all_labels)
             
-            # Normaliser
             X_scaled = self.scaler.fit_transform(X)
             
-            # Split
             X_train, X_test, y_train, y_test = train_test_split(
                 X_scaled, y, test_size=0.2, random_state=42
             )
             
-            # Entraîner le modèle
             self.model = RandomForestClassifier(
                 n_estimators=150,
                 max_depth=12,
@@ -163,11 +164,9 @@ class TradingAI:
             )
             self.model.fit(X_train, y_train)
             
-            # Évaluer
             y_pred = self.model.predict(X_test)
             accuracy = accuracy_score(y_test, y_pred)
             
-            # Sauvegarder
             with open(self.model_path, 'wb') as f:
                 pickle.dump(self.model, f)
             with open(self.scaler_path, 'wb') as f:
@@ -182,37 +181,55 @@ class TradingAI:
     
     def extract_features(self, df):
         """Extrait les caractéristiques pour l'IA"""
+        # Vérifier les colonnes
+        if df is None or len(df) < 50:
+            return []
+        
+        # S'assurer que la colonne close existe
+        if 'close' not in df.columns:
+            if 'Close' in df.columns:
+                df['close'] = df['Close']
+                df['high'] = df['High']
+                df['low'] = df['Low']
+                df['volume'] = df['Volume']
+            else:
+                logger.error("Colonne close manquante")
+                return []
+        
         features = []
         for i in range(50, len(df)):
             window = df.iloc[i-50:i]
             
             # Prix
-            close = window['Close'].values
-            high = window['High'].values
-            low = window['Low'].values
-            volume = window['Volume'].values
+            close = window['close'].values
+            high = window['high'].values if 'high' in window.columns else close
+            low = window['low'].values if 'low' in window.columns else close
+            volume = window['volume'].values if 'volume' in window.columns else [1] * len(close)
             
             # 1. Variations de prix
-            returns = np.diff(close) / close[:-1]
-            volatility = np.std(returns) * np.sqrt(252)
+            returns = np.diff(close) / close[:-1] if len(close) > 1 else [0]
+            volatility = np.std(returns) * np.sqrt(252) if len(returns) > 0 else 0
             
             # 2. Moyennes mobiles
-            sma_20 = np.mean(close[-20:])
-            sma_50 = np.mean(close[-50:])
-            price_vs_sma20 = (close[-1] / sma_20) - 1
-            price_vs_sma50 = (close[-1] / sma_50) - 1
+            sma_20 = np.mean(close[-20:]) if len(close) >= 20 else close[-1]
+            sma_50 = np.mean(close[-50:]) if len(close) >= 50 else close[-1]
+            price_vs_sma20 = (close[-1] / sma_20) - 1 if sma_20 > 0 else 0
+            price_vs_sma50 = (close[-1] / sma_50) - 1 if sma_50 > 0 else 0
             
             # 3. RSI
-            gains = np.maximum(np.diff(close), 0)
-            losses = np.maximum(-np.diff(close), 0)
-            avg_gain = np.mean(gains[-14:]) if len(gains) >= 14 else 0
-            avg_loss = np.mean(losses[-14:]) if len(losses) >= 14 else 0
-            rsi = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100
+            if len(close) >= 15:
+                gains = np.maximum(np.diff(close), 0)
+                losses = np.maximum(-np.diff(close), 0)
+                avg_gain = np.mean(gains[-14:]) if len(gains) >= 14 else 0
+                avg_loss = np.mean(losses[-14:]) if len(losses) >= 14 else 0
+                rsi = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100
+            else:
+                rsi = 50
             
             # 4. MACD
             ema_12 = np.mean(close[-12:]) if len(close) >= 12 else close[-1]
             ema_26 = np.mean(close[-26:]) if len(close) >= 26 else close[-1]
-            macd = ema_12 - ema_26
+            macd = (ema_12 - ema_26) / close[-1] if close[-1] > 0 else 0
             
             # 5. Bollinger
             std = np.std(close[-20:]) if len(close) >= 20 else 0
@@ -233,25 +250,27 @@ class TradingAI:
             stoch = ((close[-1] - low_min) / (high_max - low_min)) * 100 if high_max > low_min else 50
             
             # 9. ATR
-            tr = []
-            for j in range(1, len(window)):
-                hl = window.iloc[j]['High'] - window.iloc[j]['Low']
-                hc = abs(window.iloc[j]['High'] - window.iloc[j-1]['Close'])
-                lc = abs(window.iloc[j]['Low'] - window.iloc[j-1]['Close'])
-                tr.append(max(hl, hc, lc))
-            atr = np.mean(tr[-14:]) if len(tr) >= 14 else 0
+            atr = 0
+            if len(window) > 1:
+                tr = []
+                for j in range(1, len(window)):
+                    hl = window.iloc[j]['high'] - window.iloc[j]['low']
+                    hc = abs(window.iloc[j]['high'] - window.iloc[j-1]['close'])
+                    lc = abs(window.iloc[j]['low'] - window.iloc[j-1]['close'])
+                    tr.append(max(hl, hc, lc))
+                atr = np.mean(tr[-14:]) if len(tr) >= 14 else 0
             
             features.append([
-                volatility,
+                min(volatility, 5),  # Limité
                 price_vs_sma20,
                 price_vs_sma50,
-                rsi / 100,  # Normalisé
-                macd / close[-1],  # Normalisé
+                rsi / 100,
+                macd,
                 bb_position,
-                min(volume_ratio, 10),  # Limité à 10
+                min(volume_ratio, 10),
                 momentum * 100,
-                stoch / 100,  # Normalisé
-                atr / close[-1],  # Normalisé
+                stoch / 100,
+                atr / close[-1] if close[-1] > 0 else 0,
                 returns[-1] * 100 if len(returns) > 0 else 0
             ])
         
@@ -260,23 +279,24 @@ class TradingAI:
     def generate_labels(self, df):
         """Génère les labels (buy/sell/neutral) pour l'entraînement"""
         labels = []
-        close = df['Close'].values
+        if 'close' in df.columns:
+            close = df['close'].values
+        elif 'Close' in df.columns:
+            close = df['Close'].values
+        else:
+            return labels
         
         for i in range(50, len(close) - 5):
             current_price = close[i]
-            future_price = close[i + 5]  # 5 jours plus tard
+            future_price = close[i + 5]
             
-            # Si le prix augmente de plus de 2% → BUY
             if (future_price / current_price) > 1.025:
                 labels.append(2)  # BUY
-            # Si le prix baisse de plus de 2% → SELL
             elif (future_price / current_price) < 0.975:
                 labels.append(0)  # SELL
-            # Sinon → NEUTRAL
             else:
                 labels.append(1)  # NEUTRAL
         
-        # Ajouter des labels pour les derniers points (padding)
         while len(labels) < len(close) - 50:
             labels.append(1)
         
@@ -288,11 +308,33 @@ class TradingAI:
             return None
         
         try:
-            # Convertir les chandeliers en DataFrame
-            df = pd.DataFrame(candles)
+            # Convertir en DataFrame
+            if isinstance(candles, list):
+                if len(candles) == 0:
+                    return None
+                df = pd.DataFrame(candles)
+            else:
+                df = candles
             
-            if len(df) < 50:
+            if df is None or len(df) < 50:
                 return None
+            
+            # S'assurer que les colonnes existent
+            if 'close' not in df.columns:
+                # Essayer avec des noms alternatifs
+                if 'Close' in df.columns:
+                    df['close'] = df['Close']
+                elif 'c' in df.columns:
+                    df['close'] = df['c']
+                else:
+                    return None
+            
+            if 'high' not in df.columns and 'High' in df.columns:
+                df['high'] = df['High']
+            if 'low' not in df.columns and 'Low' in df.columns:
+                df['low'] = df['Low']
+            if 'volume' not in df.columns and 'Volume' in df.columns:
+                df['volume'] = df['Volume']
             
             # Extraire les caractéristiques
             features = self.extract_features(df)
@@ -712,7 +754,6 @@ def calculate_volatility(data, period=20):
     return std * np.sqrt(252) * 100
 
 def get_fundamental_data(symbol):
-    """Récupère les données fondamentales avec fallback"""
     try:
         ticker = yf.Ticker(symbol)
         info = ticker.info
@@ -826,7 +867,7 @@ def calculate_all_indicators(candles):
     indicators['last_bb_lower'] = indicators['bb_lower'][-1] if indicators['bb_lower'] and indicators['bb_lower'][-1] is not None else None
     indicators['last_atr'] = indicators['atr'][-1] if indicators['atr'] and indicators['atr'][-1] is not None else None
 
-    # Signaux IA (fallback sur règles simples si l'IA n'est pas disponible)
+    # Signaux IA
     signals = []
     score = 0
     
@@ -998,7 +1039,8 @@ def train_ai():
         return jsonify({
             'status': 'success',
             'message': 'Modèle IA ré-entraîné avec succès',
-            'is_trained': trading_ai.is_trained
+            'is_trained': trading_ai.is_trained,
+            'accuracy': getattr(trading_ai, 'accuracy', 'N/A')
         })
     except Exception as e:
         return jsonify({
@@ -1019,6 +1061,14 @@ def get_trading(symbol):
         if symbol in russian_symbols:
             logger.info(f"Redirection de {symbol} vers EEM")
             symbol = 'EEM'
+
+        # Pour le CAC 40, essayer différentes variantes
+        if symbol in ['^FCHI', 'FCHI', 'CAC', 'CAC40']:
+            ticker = yf.Ticker('^FCHI')
+            hist_test = ticker.history(period='1d')
+            if hist_test.empty:
+                symbol = 'CAC.PA'
+                logger.info(f"Utilisation de CAC.PA pour CAC 40")
 
         ticker = yf.Ticker(symbol)
         hist_test = ticker.history(period='1d')
@@ -1108,6 +1158,10 @@ def get_fundamental(symbol):
         if symbol in russian_symbols:
             symbol = 'EEM'
         
+        # Pour le CAC 40
+        if symbol in ['^FCHI', 'FCHI', 'CAC', 'CAC40']:
+            symbol = '^FCHI'
+        
         result = get_fundamental_data(symbol)
         result['symbol'] = symbol
         result['name'] = ASSETS.get(symbol, {}).get('name', symbol)
@@ -1132,11 +1186,23 @@ def get_insights(symbol):
         if symbol in russian_symbols:
             symbol = 'EEM'
 
+        # Pour le CAC 40
+        if symbol in ['^FCHI', 'FCHI', 'CAC', 'CAC40']:
+            symbol = '^FCHI'
+
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period='1y')  # Plus de données pour l'IA
+        hist = ticker.history(period='1y')
 
         if hist.empty or len(hist) < 50:
-            return jsonify(generate_mock_insights(symbol))
+            # Essayer CAC.PA pour le CAC 40
+            if symbol == '^FCHI':
+                ticker = yf.Ticker('CAC.PA')
+                hist = ticker.history(period='1y')
+                if not hist.empty and len(hist) >= 50:
+                    symbol = 'CAC.PA'
+            
+            if hist.empty or len(hist) < 50:
+                return jsonify(generate_mock_insights(symbol))
 
         candles = []
         for idx, row in hist.iterrows():
