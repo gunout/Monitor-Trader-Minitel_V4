@@ -22,7 +22,8 @@
 # E X A M P L E S *
 
 
-<img width="1125" height="1090" alt="Screenshot 2026-07-02 at 16-45-45 📊 TRADING MONITOR - Indicateurs IA Fondamentales" src="https://github.com/user-attachments/assets/de264d49-d5dc-437e-94ed-7254d14b2f0b" />
+<img width="1125" height="1514" alt="Screenshot 2026-07-02 at 17-48-24 📊 TRADING MONITOR - Indicateurs IA Fondamentales" src="https://github.com/user-attachments/assets/5fa135fe-1119-49f4-a77a-1abe4c80586a" />
+
 
 
 
