@@ -1,4 +1,4 @@
-# Monitor-Trader-Minitel_V4
+# Monitor-Trader-Minitel_V4 on localhost:5001
 
 📊 TRADING MONITOR INDICATEURS + IA ▸ RSI • MACD • SMA • BOLLINGER • STOCHASTIC • IA INSIGHTS + FUNDS  + FUNDAMENTALES + INDICES + SPACE .
 
