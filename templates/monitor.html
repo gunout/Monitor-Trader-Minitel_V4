@@ -149,6 +149,22 @@
         .btn-train-ai { border-color: #ffaa00; color: #ffaa00; }
         .quick-buttons { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 4px; }
 
+        /* Loader */
+        .loader {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #33ff33;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.8s linear infinite;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         .watchlist-item {
             display: flex;
             justify-content: space-between;
@@ -509,19 +525,22 @@
 
     <script>
         // ================================================================
-        // CONFIGURATION
-        // ================================================================
-        var API_BASE = 'https://radio-gleaphe.duckdns.org/trading';
-        var WS_URL = 'https://radio-gleaphe.duckdns.org/trading';
-        var socket = io(WS_URL);
-        var currentSymbol = 'GLD';
-        var currentPeriod = '1d';
-        var chartType = 'candle';
-        var chart = null;
-        var candlesData = [];
-        var currentTab = 'commodities';
-        var alertsEnabled = false;
-        var lastAlertSymbol = '';
+       // CONFIGURATION
+      // ================================================================
+      var API_BASE = 'https://radio-gleaphe.duckdns.org/trading';
+      var socket = {
+      on: function() {},
+      emit: function() {},
+      connected: false
+    };
+    var currentSymbol = 'GLD';
+    var currentPeriod = '1d';
+    var chartType = 'candle';
+    var chart = null;
+    var candlesData = [];
+    var currentTab = 'commodities';
+    var alertsEnabled = false;
+    var lastAlertSymbol = '';
 
         var activeIndicators = {
             sma: true,
@@ -859,28 +878,7 @@
 
             fetchDataForTab('commodities');
 
-            socket.on('connect', function() {
-                document.getElementById('status').textContent = '🟢 CONNECTÉ';
-                document.getElementById('status').style.borderColor = '#33ff33';
-            });
-
-            socket.on('disconnect', function() {
-                document.getElementById('status').textContent = '🔴 DÉCONNECTÉ';
-                document.getElementById('status').style.borderColor = '#ff3333';
-            });
-
-            socket.on('insights_update', function(data) {
-                updateAIInsights(data);
-                updateFundamentalData(data);
-                if (alertsEnabled && data.is_strong_signal && data.symbol !== lastAlertSymbol) {
-                    lastAlertSymbol = data.symbol;
-                    var type = data.recommendation === 'ACHAT' ? 'buy' : 'sell';
-                    var icon = type === 'buy' ? '🟢' : '🔴';
-                    var title = type === 'buy' ? '🚀 SIGNAL ACHAT' : '📉 SIGNAL VENTE';
-                    showNotification(title + ' ' + data.symbol + ' (Score: ' + data.score.toFixed(1) + ')', icon);
-                }
-            });
-
+            // Rafraîchissement périodique
             setInterval(function() { fetchDataForTab(currentTab); }, 60000);
             setInterval(function() { refreshWatchlist(currentTab); }, 120000);
             setInterval(function() { refreshTopPerformers(currentTab); }, 120000);
@@ -1260,7 +1258,7 @@
         }
 
         // ================================================================
-        // FETCH DATA PAR TAB
+        // FETCH DATA PAR TAB - VERSION PARALLÈLE OPTIMISÉE
         // ================================================================
         function fetchDataForTab(category) {
             var input = document.getElementById('symbol-input-' + category);
@@ -1272,28 +1270,49 @@
             statusEl.textContent = '⏳ CHARGEMENT...';
             statusEl.style.borderColor = '#33ff33';
 
-            fetch(API_BASE + '/api/trading/' + encodeURIComponent(sym))
-                .then(r => {
-                    if (!r.ok) throw new Error('HTTP ' + r.status);
-                    return r.json();
-                })
-                .then(data => {
-                    if (data.error) {
-                        statusEl.textContent = '❌ ' + data.error;
+            // Afficher le loader sur le prix
+            var priceEl = document.getElementById('current-price-' + category);
+            if (priceEl) priceEl.textContent = '⏳';
+
+            // Charger en parallèle les 3 appels API
+            var promises = [
+                fetch(API_BASE + '/api/trading/' + encodeURIComponent(sym)).then(r => r.json()),
+                fetch(API_BASE + '/api/insights/' + encodeURIComponent(sym)).then(r => r.json()),
+                fetch(API_BASE + '/api/fundamental/' + encodeURIComponent(sym)).then(r => r.json())
+            ];
+
+            Promise.all(promises)
+                .then(([tradingData, insightsData, fundData]) => {
+                    // Gérer les erreurs
+                    if (tradingData && tradingData.error) {
+                        statusEl.textContent = '❌ ' + tradingData.error;
                         statusEl.style.borderColor = '#ff3333';
                         return;
                     }
+                    
                     statusEl.textContent = '🟢 CONNECTÉ';
                     statusEl.style.borderColor = '#33ff33';
-                    updateDisplay(data, category);
-                    updateChart(data, category);
-                    updateIndicators(data, category);
+                    
+                    // Mettre à jour l'affichage
+                    if (tradingData && !tradingData.error) {
+                        updateDisplay(tradingData, category);
+                        updateChart(tradingData, category);
+                        updateIndicators(tradingData, category);
+                    }
+                    
+                    // Mettre à jour les insights et fondamentales
+                    if (insightsData && !insightsData.error) {
+                        updateAIInsights(insightsData);
+                        updateFundamentalData(insightsData);
+                    }
+                    
+                    if (fundData && !fundData.error) {
+                        updateFundamentalDisplay(fundData, category);
+                    }
+                    
                     document.getElementById('last-update-' + category).textContent = new Date().toLocaleTimeString('fr-FR');
-
-                    // Appeler directement les APIs
-                    fetchInsights(sym, category);
-                    fetchFundamental(sym, category);
-
+                    
+                    // Sauvegarder les préférences
                     try {
                         var prefs = JSON.parse(localStorage.getItem('trading_monitor_prefs') || '{}');
                         prefs.favorite_symbol = sym;
@@ -1303,10 +1322,34 @@
                 .catch(err => {
                     statusEl.textContent = '❌ ERREUR: ' + err.message;
                     statusEl.style.borderColor = '#ff3333';
-                    console.error(err);
+                    console.error('Erreur chargement:', err);
+                    
+                    // Réessayer avec l'appel individuel en cas d'échec
+                    fetch(API_BASE + '/api/trading/' + encodeURIComponent(sym))
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.error) {
+                                statusEl.textContent = '❌ ' + data.error;
+                                statusEl.style.borderColor = '#ff3333';
+                                return;
+                            }
+                            statusEl.textContent = '🟢 CONNECTÉ';
+                            statusEl.style.borderColor = '#33ff33';
+                            updateDisplay(data, category);
+                            updateChart(data, category);
+                            updateIndicators(data, category);
+                            document.getElementById('last-update-' + category).textContent = new Date().toLocaleTimeString('fr-FR');
+                        })
+                        .catch(err2 => {
+                            statusEl.textContent = '❌ ERREUR: ' + err2.message;
+                            statusEl.style.borderColor = '#ff3333';
+                        });
                 });
         }
 
+        // ================================================================
+        // REFRESH FONCTIONS
+        // ================================================================
         function refreshFundamentals(category) {
             var input = document.getElementById('symbol-input-' + category);
             if (!input) return;
@@ -1661,7 +1704,6 @@
 
             var recoEl = document.getElementById('ia-reco' + prefix);
             if (recoEl) {
-                // Utiliser la recommandation IA si disponible
                 var rec = data.ia_recommendation || data.recommendation || 'NEUTRE';
                 var color = rec === 'ACHAT' ? '#33ff33' : rec === 'VENTE' ? '#ff3333' : '#ffaa00';
                 recoEl.textContent = rec;
